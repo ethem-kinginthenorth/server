@@ -48,8 +48,6 @@ target_link_libraries(
   PUBLIC TRITON::grpcclient_static
   PUBLIC TRITON::httpclient_static
   PUBLIC c-api-helpers-library
-  triton-core-serverstub  # from repo-core
-  triton-core-serverapi   # from repo-core
 )
 
 if(${TRITON_ENABLE_GPU})

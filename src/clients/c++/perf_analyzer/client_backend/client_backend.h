@@ -35,11 +35,11 @@
 #include <string>
 #include <vector>
 #include "src/clients/c++/library/ipc.h"
-#include "src/clients/c++/perf_analyzer/c_api_helpers/triton_loader.h"
+
 #include "src/clients/c++/perf_analyzer/error.h"
 
 namespace perfanalyzer { namespace clientbackend {
-
+class TritonLoader;
 class ClientBackend;
 class InferInput;
 class InferRequestedOutput;

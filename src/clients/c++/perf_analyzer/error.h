@@ -25,6 +25,8 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #pragma once
 #include <string>
+/// FIXME: Duplication of src/clients/c++/library/common.h
+/// Separate shared_library to common library and delete this
 
 #define RETURN_IF_CB_ERROR(S)           \
   do {                                  \
