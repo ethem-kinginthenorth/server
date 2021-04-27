@@ -110,7 +110,8 @@ ClientBackendFactory::AddAdditonalInfo(
     model_repository_path_ = model_repository_path;
     memory_type_ = memory_type;
     RETURN_IF_ERROR(TritonLoader::Create(
-        server_library_path, model_repository_path, memory_type, &loader_));
+        server_library_path, model_repository_path, memory_type, verbose_,
+        &loader_));
     return Error::Success;
   }
 }

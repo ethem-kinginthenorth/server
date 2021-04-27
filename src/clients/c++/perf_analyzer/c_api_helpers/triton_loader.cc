@@ -23,15 +23,16 @@
 // OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#define TRITON_INFERENCE_SERVER_CAPI_CLASS \
+  perfanalyzer::clientbackend::TritonLoader
 #include "src/clients/c++/perf_analyzer/c_api_helpers/triton_loader.h"
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
 #include <fstream>
+#include <future>
 #include <string>
-#include "src/clients/c++/perf_analyzer/c_api_helpers/common.h"
-
 #include <thread>
-
+#include "src/clients/c++/perf_analyzer/c_api_helpers/common.h"
 namespace cb = perfanalyzer::clientbackend;
 namespace perfanalyzer { namespace clientbackend {
 namespace {
@@ -121,17 +122,39 @@ ResponseRelease(
   return nullptr;  // Success
 }
 
+void
+InferRequestComplete(
+    TRITONSERVER_InferenceRequest* request, const uint32_t flags, void* userp)
+{
+  // We reuse the request so we don't delete it here.
+}
+
+
+void
+InferResponseComplete(
+    TRITONSERVER_InferenceResponse* response, const uint32_t flags, void* userp)
+{
+  if (response != nullptr) {
+    // Send 'response' to the future.
+    std::promise<TRITONSERVER_InferenceResponse*>* p =
+        reinterpret_cast<std::promise<TRITONSERVER_InferenceResponse*>*>(userp);
+    p->set_value(response);
+    delete p;
+  }
+}
+
 }  // namespace
 Error
 TritonLoader::Create(
     const std::string& library_directory, const std::string& model_repository,
-    const std::string& memory_type, std::shared_ptr<TritonLoader>* loader)
+    const std::string& memory_type, bool verbose,
+    std::shared_ptr<TritonLoader>* loader)
 {
   if (library_directory.empty() || model_repository.empty()) {
     return Error("cannot load server, paths are empty");
   }
-  std::shared_ptr<TritonLoader> triton_loader = std::make_shared<TritonLoader>(
-      library_directory, model_repository, memory_type);
+  std::shared_ptr<TritonLoader> triton_loader(new TritonLoader(
+      library_directory, model_repository, memory_type, verbose));
 
   Error status = triton_loader->LoadServerLibrary();
   assert(status.IsOk());
@@ -144,7 +167,8 @@ TritonLoader::Create(
 
 TritonLoader::TritonLoader(
     const std::string& library_directory, const std::string& model_repository,
-    const std::string& memory_type)
+    const std::string& memory_type, bool verbose)
+    : InferenceServerClient(verbose)
 {
   library_directory_ = library_directory;
   model_repository_path_ = model_repository;
@@ -153,21 +177,6 @@ TritonLoader::TritonLoader(
 Error
 TritonLoader::StartTriton(const std::string& memory_type, bool isVerbose)
 {
-  if (!memory_type.empty()) {
-    enforce_memory_type_ = true;
-    if (memory_type.compare("system")) {
-      requested_memory_type_ = TRITONSERVER_MEMORY_CPU;
-    } else if (memory_type.compare("pinned")) {
-      requested_memory_type_ = TRITONSERVER_MEMORY_CPU_PINNED;
-    } else if (memory_type.compare("gpu")) {
-      requested_memory_type_ = TRITONSERVER_MEMORY_GPU;
-    } else {
-      return Error("Specify one of the following types: system, pinned or gpu");
-    }
-    requested_memory_type = requested_memory_type_;
-    enforce_memory_type = enforce_memory_type_;
-  }
-
   if (isVerbose) {
     verbose_level_ = 1;
   }
@@ -330,20 +339,6 @@ TritonLoader::LoadModel(
     }
   }
 
-  // Create the allocator that will be used to allocate buffers for
-  // the result tensors.
-  RETURN_IF_TRITONSERVER_ERROR(
-      response_allocator_new_fn_(
-          &allocator_,
-          reinterpret_cast<
-              TRITONSERVER_Error* (*)(TRITONSERVER_ResponseAllocator * allocator, const char* tensor_name, size_t byte_size, TRITONSERVER_MemoryType memory_type, int64_t memory_type_id, void* userp, void** buffer, void** buffer_userp, TRITONSERVER_MemoryType* actual_memory_type, int64_t* actual_memory_type_id)>(
-              ResponseAlloc),
-          reinterpret_cast<
-              TRITONSERVER_Error* (*)(TRITONSERVER_ResponseAllocator * allocator, void* buffer, void* buffer_userp, size_t byte_size, TRITONSERVER_MemoryType memory_type, int64_t memory_type_id)>(
-              ResponseRelease),
-          nullptr /* start_fn */),
-      "creating response allocator");
-
   std::cout << "loaded model " << model_name_ << std::endl;
   model_is_loaded_ = true;  // flag to confirm model is correct and loaded
   return Error::Success;
@@ -486,16 +481,23 @@ TritonLoader::LoadServerLibrary()
 
   TritonServerInferenceResponseDeleteFn_t irdfn;
   TritonServerInferenceRequestRemoveAllInputDataFn_t irraidfn;
-  TritonServerResponseAllocatorDeleteFn_t iradfn;
+  TritonServerResponseAllocatorDeleteFn_t radfn;
   TritonServerErrorNewFn_t enfn;
 
   TritonServerMemoryTypeStringFn_t mtsfn;
   TritonServerInferenceResponseOutputCountFn_t irocfn;
   TritonServerDataTypeStringFn_t dtsfn;
   TritonServerErrorMessageFn_t emfn;
+
   TritonServerErrorDeleteFn_t edfn;
   TritonServerErrorCodeToStringFn_t ectsfn;
   TritonServerModelConfigFn_t mcfn;
+  TritonServerInferenceRequestSetCorrelationIdFn_t scidfn;
+
+  TritonServerInferenceRequestSetFlagsFn_t sffn;
+  TritonServerInferenceRequestSetPriorityFn_t spfn;
+  TritonServerInferenceRequestSetTimeoutMicrosecondsFn_t stmsfn;
+  TritonServerStringToDatatypeFn_t stdtfn;
 
   RETURN_IF_ERROR(GetEntrypoint(
       dlhandle_, "TRITONSERVER_ApiVersion", true /* optional */,
@@ -596,7 +598,7 @@ TritonLoader::LoadServerLibrary()
       true /* optional */, reinterpret_cast<void**>(&irraidfn)));
   RETURN_IF_ERROR(GetEntrypoint(
       dlhandle_, "TRITONSERVER_ResponseAllocatorDelete", true /* optional */,
-      reinterpret_cast<void**>(&iradfn)));
+      reinterpret_cast<void**>(&radfn)));
   RETURN_IF_ERROR(GetEntrypoint(
       dlhandle_, "TRITONSERVER_ErrorNew", true /* optional */,
       reinterpret_cast<void**>(&enfn)));
@@ -613,6 +615,7 @@ TritonLoader::LoadServerLibrary()
   RETURN_IF_ERROR(GetEntrypoint(
       dlhandle_, "TRITONSERVER_ErrorMessage", true /* optional */,
       reinterpret_cast<void**>(&emfn)));
+
   RETURN_IF_ERROR(GetEntrypoint(
       dlhandle_, "TRITONSERVER_ErrorDelete", true /* optional */,
       reinterpret_cast<void**>(&edfn)));
@@ -622,6 +625,23 @@ TritonLoader::LoadServerLibrary()
   RETURN_IF_ERROR(GetEntrypoint(
       dlhandle_, "TRITONSERVER_ServerModelConfig", true /* optional */,
       reinterpret_cast<void**>(&mcfn)));
+  RETURN_IF_ERROR(GetEntrypoint(
+      dlhandle_, "TRITONSERVER_InferenceRequestSetCorrelationId",
+      true /* optional */, reinterpret_cast<void**>(&scidfn)));
+
+  RETURN_IF_ERROR(GetEntrypoint(
+      dlhandle_, "TRITONSERVER_InferenceRequestSetFlags", true /* optional */,
+      reinterpret_cast<void**>(&sffn)));
+  RETURN_IF_ERROR(GetEntrypoint(
+      dlhandle_, "TRITONSERVER_InferenceRequestSetPriority",
+      true /* optional */, reinterpret_cast<void**>(&spfn)));
+  RETURN_IF_ERROR(GetEntrypoint(
+      dlhandle_, "TRITONSERVER_InferenceRequestSetTimeoutMicroseconds",
+      true /* optional */, reinterpret_cast<void**>(&stmsfn)));
+  RETURN_IF_ERROR(GetEntrypoint(
+      dlhandle_, "TRITONSERVER_StringToDataType", true /* optional */,
+      reinterpret_cast<void**>(&stdtfn)));
+
 
   api_version_fn_ = apifn;
   options_new_fn_ = onfn;
@@ -660,16 +680,23 @@ TritonLoader::LoadServerLibrary()
 
   inference_response_delete_fn_ = irdfn;
   inference_request_remove_all_input_data_fn_ = irraidfn;
-  response_allocator_delete_fn_ = iradfn;
+  response_allocator_delete_fn_ = radfn;
   error_new_fn_ = enfn;
 
   memory_type_string_fn_ = mtsfn;
   inference_response_output_count_fn_ = irocfn;
   data_type_string_fn_ = dtsfn;
   error_message_fn_ = emfn;
+
   error_delete_fn_ = edfn;
   error_code_to_string_fn_ = ectsfn;
   model_config_fn_ = mcfn;
+  set_correlation_id_fn_ = scidfn;
+
+  set_flags_fn_ = sffn;
+  set_priority_fn_ = spfn;
+  set_timeout_ms_fn_ = stmsfn;
+  string_to_datatype_fn_ = stdtfn;
 
   return Error::Success;
 }
@@ -723,12 +750,18 @@ TritonLoader::ClearHandles()
   inference_response_output_count_fn_ = nullptr;
   data_type_string_fn_ = nullptr;
   error_message_fn_ = nullptr;
+
   error_delete_fn_ = nullptr;
   error_code_to_string_fn_ = nullptr;
+  set_flags_fn_ = nullptr;
+  set_priority_fn_ = nullptr;
+  set_timeout_ms_fn_ = nullptr;
 
   options_ = nullptr;
   server_ptr_ = nullptr;
-  allocator_ = nullptr;
+  set_correlation_id_fn_ = nullptr;
+  string_to_datatype_fn_ = nullptr;
+  response_allocator_delete_fn_ = nullptr;
 }
 
 Error
@@ -742,7 +775,178 @@ TritonLoader::FileExists(std::string& filepath)
     return Error::Success;
   }
 }
+Error
+TritonLoader::Infer(
+    const nic::InferOptions& options,
+    const std::vector<nic::InferInput*>& inputs,
+    const std::vector<const nic::InferRequestedOutput*>& outputs)
+{
+  TRITONSERVER_ResponseAllocator* allocator = nullptr;
+  TRITONSERVER_InferenceRequest* irequest = nullptr;
+  InitializeRequest(options, outputs, allocator, irequest);
+  AddInputs(options, inputs, irequest);
+  AddOutputs(options, outputs, irequest);
+  // Perform inference...
+  auto p = new std::promise<TRITONSERVER_InferenceResponse*>();
+  std::future<TRITONSERVER_InferenceResponse*> completed = p->get_future();
+  RETURN_IF_TRITONSERVER_ERROR(
+      inference_request_set_response_callback_fn_(
+          irequest, allocator, nullptr /* response_allocator_userp */,
+          InferResponseComplete, reinterpret_cast<void*>(p)),
+      "setting response callback");
+  RETURN_IF_TRITONSERVER_ERROR(
+      infer_async_fn_(server_.get(), irequest, nullptr /* trace */),
+      "running inference");
+  // Wait for the inference to complete.
+  TRITONSERVER_InferenceResponse* completed_response = completed.get();
+  RETURN_IF_TRITONSERVER_ERROR(
+      inference_response_error_fn_(completed_response), "response status");
 
+  RETURN_IF_TRITONSERVER_ERROR(
+      inference_response_delete_fn_(completed_response),
+      "deleting inference response");
+  RETURN_IF_TRITONSERVER_ERROR(
+      TRITONSERVER_InferenceRequestDelete(irequest),
+      "deleting inference request");
+
+  RETURN_IF_TRITONSERVER_ERROR(
+      response_allocator_delete_fn_(allocator), "deleting response allocator");
+  return Error::Success;
+}
+
+Error
+TritonLoader::InitializeRequest(
+    const nic::InferOptions& options,
+    const std::vector<const nic::InferRequestedOutput*>& outputs,
+    TRITONSERVER_ResponseAllocator* allocator,
+    TRITONSERVER_InferenceRequest* irequest)
+{
+  // Create the allocator that will be used to allocate buffers for
+  // the result tensors.
+  RETURN_IF_TRITONSERVER_ERROR(
+      response_allocator_new_fn_(
+          &allocator,
+          reinterpret_cast<
+              TRITONSERVER_Error* (*)(TRITONSERVER_ResponseAllocator * allocator, const char* tensor_name, size_t byte_size, TRITONSERVER_MemoryType memory_type, int64_t memory_type_id, void* userp, void** buffer, void** buffer_userp, TRITONSERVER_MemoryType* actual_memory_type, int64_t* actual_memory_type_id)>(
+              ResponseAlloc),
+          reinterpret_cast<
+              TRITONSERVER_Error* (*)(TRITONSERVER_ResponseAllocator * allocator, void* buffer, void* buffer_userp, size_t byte_size, TRITONSERVER_MemoryType memory_type, int64_t memory_type_id)>(
+              ResponseRelease),
+          nullptr /* start_fn */),
+      "creating response allocator");
+
+  // set up inference request
+  RETURN_IF_TRITONSERVER_ERROR(
+      inference_request_new_fn_(
+          &irequest, server_.get(), model_name_.c_str(), model_version_),
+      "creating inference request");
+  RETURN_IF_TRITONSERVER_ERROR(
+      inference_request_set_id_fn_(irequest, options.request_id_.c_str()),
+      "setting ID for the request");
+  if ((options.sequence_id_ != 0) || (options.priority_ != 0) ||
+      (options.server_timeout_ != 0) || outputs.empty()) {
+    RETURN_IF_TRITONSERVER_ERROR(
+        set_correlation_id_fn_(irequest, options.sequence_id_),
+        "setting sequence ID for the request");
+
+    uint32_t flags = 0;
+    if (options.sequence_start_) {
+      flags |= TRITONSERVER_REQUEST_FLAG_SEQUENCE_START;
+    }
+    if (options.sequence_start_) {
+      flags |= TRITONSERVER_REQUEST_FLAG_SEQUENCE_END;
+    }
+    RETURN_IF_TRITONSERVER_ERROR(
+        set_flags_fn_(irequest, flags),
+        "setting inference flags for the request");
+  }
+  if (options.priority_ != 0) {
+    RETURN_IF_TRITONSERVER_ERROR(
+        set_priority_fn_(irequest, options.priority_),
+        "setting priority for the request");
+  }
+  if (options.server_timeout_ != 0) {
+    RETURN_IF_TRITONSERVER_ERROR(
+        set_timeout_ms_fn_(irequest, options.server_timeout_),
+        "setting timeout for the request");
+  }
+  RETURN_IF_TRITONSERVER_ERROR(
+      inference_request_set_release_callback_fn_(
+          irequest, InferRequestComplete, nullptr /* request_release_userp */),
+      "setting request release callback");
+
+
+  return Error::Success;
+}
+
+Error
+TritonLoader::AddInputs(
+    const nic::InferOptions& options,
+    const std::vector<nic::InferInput*>& inputs,
+    TRITONSERVER_InferenceRequest* irequest)
+{
+  for (auto io : inputs) {
+    const char* input_name = io->Name().c_str();
+    const char* datatype = io->Datatype().c_str();
+    const TRITONSERVER_DataType dtype = string_to_datatype_fn_(datatype);
+    std::vector<int64_t> shape_vec;
+    for (const int64_t dim : io->Shape()) {
+      shape_vec.push_back(dim);
+    }
+    RETURN_IF_TRITONSERVER_ERROR(
+        inference_request_add_input_fn_(
+            irequest, input_name, dtype, &shape_vec[0], shape_vec.size()),
+        "setting input for the request");
+    if (io->IsSharedMemory()) {
+      return Error("shared library not supported for CAPI");
+    }
+    size_t byte_size;
+    nic::Error err = io->ByteSize(&byte_size);
+    if (!err.IsOk()) {
+      return Error(err.Message());
+    }
+    if (byte_size == 0) {
+      RETURN_IF_TRITONSERVER_ERROR(
+          inference_request_append_input_data_fn_(
+              irequest, input_name, nullptr, 0 /* byte_size */,
+              TRITONSERVER_MEMORY_CPU, 0 /* memory_type_id */),
+          "appending input data with byte size zero");
+    } else {
+      io->PrepareForRequest();
+      bool end_of_input = false;
+      while (!end_of_input) {
+        const uint8_t* buf;
+        size_t buf_size;
+        io->GetNext(&buf, &buf_size, &end_of_input);
+        if (buf != nullptr) {
+          RETURN_IF_TRITONSERVER_ERROR(
+              inference_request_append_input_data_fn_(
+                  irequest, input_name, const_cast<uint8_t*>(buf), buf_size,
+                  requested_memory_type_, 0 /* memory_type_id */),
+              "appending data to tritonserver");
+        }
+      }
+    }
+  }
+
+
+  return Error::Success;
+}
+
+Error
+TritonLoader::AddOutputs(
+    const nic::InferOptions& options,
+    const std::vector<const nic::InferRequestedOutput*>& outputs,
+    TRITONSERVER_InferenceRequest* irequest)
+{
+  for (auto io : outputs) {
+    const char* output_name = io->Name().c_str();
+    RETURN_IF_TRITONSERVER_ERROR(
+        inference_request_add_requested_output_fn_(irequest, output_name),
+        "setting output for the request");
+  }
+  return Error::Success;
+}
 
 /// delete
 TRITONSERVER_Error*

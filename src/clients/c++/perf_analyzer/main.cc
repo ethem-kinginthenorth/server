@@ -1172,6 +1172,13 @@ main(int argc, char** argv)
         factory->AddAdditonalInfo(
             server_library_path, model_repository_path, memory_type),
         "cannot add additional info");
+    if (!target_concurrency) {
+      std::cerr << " CAPI does not support target concurrency" << std::endl;
+      return 1;
+    } else if (shared_memory_type != pa::NO_SHARED_MEMORY) {
+      std::cerr << " CAPI does not support shared memory types at all"
+                << std::endl;
+    }
   }
 
   std::unique_ptr<cb::ClientBackend> backend;

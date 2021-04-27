@@ -576,7 +576,7 @@ TritonLocalInferInput::SetSharedMemory(
 
 TritonLocalInferInput::TritonLocalInferInput(
     const std::string& name, const std::string& datatype)
-    : InferInput(BackendKind::TRITON, name, datatype)
+    : InferInput(BackendKind::TRITON_LOCAL, name, datatype)
 {
 }
 

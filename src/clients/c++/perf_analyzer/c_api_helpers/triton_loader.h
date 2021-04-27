@@ -29,6 +29,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include "src/clients/c++/library/common.h"
 #include "src/clients/c++/perf_analyzer/c_api_helpers/shared_library.h"
 #include "src/clients/c++/perf_analyzer/error.h"
 #include "triton/core/tritonserver.h"
@@ -59,23 +60,21 @@
     }                                                     \
   } while (false)
 
+namespace nic = nvidia::inferenceserver::client;
 namespace perfanalyzer { namespace clientbackend {
 
-class TritonLoader {
+class TritonLoader : public nic::InferenceServerClient {
  public:
   static Error Create(
       const std::string& library_directory, const std::string& model_repository,
-      const std::string& memory_type, std::shared_ptr<TritonLoader>* loader);
+      const std::string& memory_type, bool verbose,
+      std::shared_ptr<TritonLoader>* loader);
   ~TritonLoader()
   {
     FAIL_IF_ERR(
         CloseLibraryHandle(dlhandle_), "error on closing triton loader");
     ClearHandles();
   }
-
-  TritonLoader(
-      const std::string& library_directory, const std::string& model_repository,
-      const std::string& memory_type);
 
   Error StartTriton(const std::string& memory_type, bool isVerbose);
 
@@ -87,6 +86,11 @@ class TritonLoader {
   Error ModelConfig(rapidjson::Document* model_config) const;
 
   Error ServerMetaData(rapidjson::Document* server_metadata) const;
+
+  Error Infer(
+      const nic::InferOptions& options,
+      const std::vector<nic::InferInput*>& inputs,
+      const std::vector<const nic::InferRequestedOutput*>& outputs);
 
   bool ModelIsLoaded() const { return model_is_loaded_; }
   bool ServerIsReady() const { return server_is_ready_; }
@@ -232,6 +236,7 @@ class TritonLoader {
   // TRITONSERVER_ErrorMessage
   typedef const char* (*TritonServerErrorMessageFn_t)(
       TRITONSERVER_Error* error);
+
   // TRITONSERVER_ErrorDelete
   typedef void (*TritonServerErrorDeleteFn_t)(TRITONSERVER_Error* error);
   // TRITONSERVER_ErrorCodeString
@@ -242,8 +247,31 @@ class TritonLoader {
       TRITONSERVER_Server* server, const char* model_name,
       const int64_t model_version, const uint32_t config_version,
       TRITONSERVER_Message** model_config);
+  // TRITONSERVER_InferenceRequestSetCorrelationId
+  typedef TRITONSERVER_Error* (
+      *TritonServerInferenceRequestSetCorrelationIdFn_t)(
+      TRITONSERVER_InferenceRequest* inference_request,
+      uint64_t correlation_id);
+
+  // TRITONSERVER_InferenceRequestSetFlags
+  typedef TRITONSERVER_Error* (*TritonServerInferenceRequestSetFlagsFn_t)(
+      TRITONSERVER_InferenceRequest* inference_request, uint32_t flags);
+  // TRITONSERVER_InferenceRequestSetPriority
+  typedef TRITONSERVER_Error* (*TritonServerInferenceRequestSetPriorityFn_t)(
+      TRITONSERVER_InferenceRequest* inference_request, uint32_t priority);
+  // TRITONSERVER_InferenceRequestSetTimeoutMicroseconds
+  typedef TRITONSERVER_Error* (
+      *TritonServerInferenceRequestSetTimeoutMicrosecondsFn_t)(
+      TRITONSERVER_InferenceRequest* inference_request, uint64_t timeout_us);
+  // TRITONSERVER_StringToDataType
+  typedef TRITONSERVER_DataType (*TritonServerStringToDatatypeFn_t)(
+      const char* dtype);
 
  private:
+  TritonLoader(
+      const std::string& library_directory, const std::string& model_repository,
+      const std::string& memory_type, bool verbose);
+
   /// Load all tritonserver.h functions onto triton_loader
   /// internal handles
   Error LoadServerLibrary();
@@ -254,6 +282,22 @@ class TritonLoader {
   /// \param filepath Path of library to check
   /// \return perfanalyzer::clientbackend::Error
   Error FileExists(std::string& filepath);
+
+  Error InitializeRequest(
+      const nic::InferOptions& options,
+      const std::vector<const nic::InferRequestedOutput*>& outputs,
+      TRITONSERVER_ResponseAllocator* allocator,
+      TRITONSERVER_InferenceRequest* irequest);
+
+  Error AddInputs(
+      const nic::InferOptions& options,
+      const std::vector<nic::InferInput*>& inputs,
+      TRITONSERVER_InferenceRequest* irequest);
+
+  Error AddOutputs(
+      const nic::InferOptions& options,
+      const std::vector<const nic::InferRequestedOutput*>& outputs,
+      TRITONSERVER_InferenceRequest* irequest);
 
   TRITONSERVER_Error* ParseModelMetadata(
       const rapidjson::Document& model_metadata, bool* is_int,
@@ -311,13 +355,19 @@ class TritonLoader {
       inference_response_output_count_fn_;
   TritonServerDataTypeStringFn_t data_type_string_fn_;
   TritonServerErrorMessageFn_t error_message_fn_;
+
   TritonServerErrorDeleteFn_t error_delete_fn_;
   TritonServerErrorCodeToStringFn_t error_code_to_string_fn_;
   TritonServerModelConfigFn_t model_config_fn_;
+  TritonServerInferenceRequestSetCorrelationIdFn_t set_correlation_id_fn_;
+
+  TritonServerInferenceRequestSetFlagsFn_t set_flags_fn_;
+  TritonServerInferenceRequestSetPriorityFn_t set_priority_fn_;
+  TritonServerInferenceRequestSetTimeoutMicrosecondsFn_t set_timeout_ms_fn_;
+  TritonServerStringToDatatypeFn_t string_to_datatype_fn_;
 
   TRITONSERVER_ServerOptions* options_;
   TRITONSERVER_Server* server_ptr_;
-  TRITONSERVER_ResponseAllocator* allocator_ = nullptr;
   std::shared_ptr<TRITONSERVER_Server> server_;
   std::string library_directory_;
   const std::string SERVER_LIBRARY_PATH = "/lib/libtritonserver.so";
@@ -329,6 +379,18 @@ class TritonLoader {
   TRITONSERVER_memorytype_enum requested_memory_type_ = TRITONSERVER_MEMORY_CPU;
   bool model_is_loaded_ = false;
   bool server_is_ready_ = false;
+
+  //   /// Helper class to manage requests...
+  //   class CApiInferRequest {
+  //    public:
+  //     CApiInferRequest();
+  //     ~CApiInferRequest();
+
+  //     nic::RequestTimers& Timer() { return timer_; }
+
+  //    private:
+  //     nic::RequestTimers timer_;
+  //   };
 };
 
 
