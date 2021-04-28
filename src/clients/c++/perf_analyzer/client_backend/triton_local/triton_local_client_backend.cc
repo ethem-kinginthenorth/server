@@ -184,19 +184,22 @@ TritonLocalClientBackend::Infer(
   ParseInferOptionsToTriton(options, &triton_options);
 
   nic::InferResult* triton_result;
+  if (auto loader = loader_.lock()) {
+    RETURN_IF_ERROR(loader->Infer(options, inputs, outputs, triton_result));
+    // if (protocol_ == ProtocolType::GRPC) {
+    //   RETURN_IF_TRITON_ERROR(client_.grpc_client_->Infer(
+    //       &triton_result, triton_options, triton_inputs, triton_outputs,
+    //       *http_headers_, compression_algorithm_));
+    // } else {
+    //   RETURN_IF_TRITON_ERROR(client_.http_client_->Infer(
+    //       &triton_result, triton_options, triton_inputs, triton_outputs,
+    //       *http_headers_));
+    // }
 
-  if (protocol_ == ProtocolType::GRPC) {
-    RETURN_IF_TRITON_ERROR(client_.grpc_client_->Infer(
-        &triton_result, triton_options, triton_inputs, triton_outputs,
-        *http_headers_, compression_algorithm_));
+    *result = new TritonLocalInferResult(triton_result);
   } else {
-    RETURN_IF_TRITON_ERROR(client_.http_client_->Infer(
-        &triton_result, triton_options, triton_inputs, triton_outputs,
-        *http_headers_));
+    return Error("loaded server does not exist");
   }
-
-  *result = new TritonLocalInferResult(triton_result);
-
   return Error::Success;
 }
 
@@ -206,50 +209,52 @@ TritonLocalClientBackend::AsyncInfer(
     const std::vector<InferInput*>& inputs,
     const std::vector<const InferRequestedOutput*>& outputs)
 {
-  auto wrapped_callback = [callback](nic::InferResult* client_result) {
-    InferResult* result = new TritonLocalInferResult(client_result);
-    callback(result);
-  };
+  // auto wrapped_callback = [callback](nic::InferResult* client_result) {
+  //   InferResult* result = new TritonLocalInferResult(client_result);
+  //   callback(result);
+  // };
 
-  std::vector<nic::InferInput*> triton_inputs;
-  ParseInferInputToTriton(inputs, &triton_inputs);
+  // std::vector<nic::InferInput*> triton_inputs;
+  // ParseInferInputToTriton(inputs, &triton_inputs);
 
-  std::vector<const nic::InferRequestedOutput*> triton_outputs;
-  ParseInferRequestedOutputToTriton(outputs, &triton_outputs);
+  // std::vector<const nic::InferRequestedOutput*> triton_outputs;
+  // ParseInferRequestedOutputToTriton(outputs, &triton_outputs);
 
-  nic::InferOptions triton_options(options.model_name_);
-  ParseInferOptionsToTriton(options, &triton_options);
+  // nic::InferOptions triton_options(options.model_name_);
+  // ParseInferOptionsToTriton(options, &triton_options);
 
-  if (protocol_ == ProtocolType::GRPC) {
-    RETURN_IF_TRITON_ERROR(client_.grpc_client_->AsyncInfer(
-        wrapped_callback, triton_options, triton_inputs, triton_outputs,
-        *http_headers_, compression_algorithm_));
-  } else {
-    RETURN_IF_TRITON_ERROR(client_.http_client_->AsyncInfer(
-        wrapped_callback, triton_options, triton_inputs, triton_outputs,
-        *http_headers_));
-  }
+  // if (protocol_ == ProtocolType::GRPC) {
+  //   RETURN_IF_TRITON_ERROR(client_.grpc_client_->AsyncInfer(
+  //       wrapped_callback, triton_options, triton_inputs, triton_outputs,
+  //       *http_headers_, compression_algorithm_));
+  // } else {
+  //   RETURN_IF_TRITON_ERROR(client_.http_client_->AsyncInfer(
+  //       wrapped_callback, triton_options, triton_inputs, triton_outputs,
+  //       *http_headers_));
+  // }
 
-  return Error::Success;
+  // return Error::Success;
+  return Error("CAPI does not support streaming inferences");;
 }
 
 Error
 TritonLocalClientBackend::StartStream(OnCompleteFn callback, bool enable_stats)
 {
-  auto wrapped_callback = [callback](nic::InferResult* client_result) {
-    InferResult* result = new TritonLocalInferResult(client_result);
-    callback(result);
-  };
+  // auto wrapped_callback = [callback](nic::InferResult* client_result) {
+  //   InferResult* result = new TritonLocalInferResult(client_result);
+  //   callback(result);
+  // };
 
-  if (protocol_ == ProtocolType::GRPC) {
-    RETURN_IF_TRITON_ERROR(client_.grpc_client_->StartStream(
-        wrapped_callback, enable_stats, 0 /* stream_timeout */, *http_headers_,
-        compression_algorithm_));
-  } else {
-    return Error("HTTP does not support starting streams");
-  }
+  // if (protocol_ == ProtocolType::GRPC) {
+  //   RETURN_IF_TRITON_ERROR(client_.grpc_client_->StartStream(
+  //       wrapped_callback, enable_stats, 0 /* stream_timeout */, *http_headers_,
+  //       compression_algorithm_));
+  // } else {
+  //   return Error("HTTP does not support starting streams");
+  // }
 
-  return Error::Success;
+  // return Error::Success;
+  return Error("CAPI does not support streaming inferences");;
 }
 
 Error
@@ -257,23 +262,23 @@ TritonLocalClientBackend::AsyncStreamInfer(
     const InferOptions& options, const std::vector<InferInput*>& inputs,
     const std::vector<const InferRequestedOutput*>& outputs)
 {
-  std::vector<nic::InferInput*> triton_inputs;
-  ParseInferInputToTriton(inputs, &triton_inputs);
+  // std::vector<nic::InferInput*> triton_inputs;
+  // ParseInferInputToTriton(inputs, &triton_inputs);
 
-  std::vector<const nic::InferRequestedOutput*> triton_outputs;
-  ParseInferRequestedOutputToTriton(outputs, &triton_outputs);
+  // std::vector<const nic::InferRequestedOutput*> triton_outputs;
+  // ParseInferRequestedOutputToTriton(outputs, &triton_outputs);
 
-  nic::InferOptions triton_options(options.model_name_);
-  ParseInferOptionsToTriton(options, &triton_options);
+  // nic::InferOptions triton_options(options.model_name_);
+  // ParseInferOptionsToTriton(options, &triton_options);
 
-  if (protocol_ == ProtocolType::GRPC) {
-    RETURN_IF_TRITON_ERROR(client_.grpc_client_->AsyncStreamInfer(
-        triton_options, triton_inputs, triton_outputs));
-  } else {
-    return Error("HTTP does not support streaming inferences");
-  }
+  // if (protocol_ == ProtocolType::GRPC) {
+  //   RETURN_IF_TRITON_ERROR(client_.grpc_client_->AsyncStreamInfer(
+  //       triton_options, triton_inputs, triton_outputs));
+  // } else {
+  //   return Error("HTTP does not support streaming inferences");
+  // }
 
-  return Error::Success;
+  return Error("CAPI does not support streaming inferences");
 }
 
 Error
@@ -612,7 +617,7 @@ TritonLocalInferRequestedOutput::SetSharedMemory(
 
 
 TritonLocalInferRequestedOutput::TritonLocalInferRequestedOutput()
-    : InferRequestedOutput(BackendKind::TRITON)
+    : InferRequestedOutput(BackendKind::TRITON_LOCAL)
 {
 }
 

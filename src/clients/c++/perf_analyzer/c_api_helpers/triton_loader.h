@@ -90,10 +90,12 @@ class TritonLoader : public nic::InferenceServerClient {
   Error Infer(
       const nic::InferOptions& options,
       const std::vector<nic::InferInput*>& inputs,
-      const std::vector<const nic::InferRequestedOutput*>& outputs);
+      const std::vector<const nic::InferRequestedOutput*>& outputs,
+      InferResult** result);
 
   bool ModelIsLoaded() const { return model_is_loaded_; }
   bool ServerIsReady() const { return server_is_ready_; }
+  nic::RequestTimers& Timer() { return timer_; }
 
   // TRITONSERVER_ApiVersion
   typedef TRITONSERVER_Error* (*TritonServerApiVersionFn_t)(
@@ -266,6 +268,14 @@ class TritonLoader : public nic::InferenceServerClient {
   // TRITONSERVER_StringToDataType
   typedef TRITONSERVER_DataType (*TritonServerStringToDatatypeFn_t)(
       const char* dtype);
+// TRITONSERVER_InferenceResponseOutput
+typedef TRITONSERVER_Error* (*TritonServerInferenceResponseOutputFn_t)(
+    TRITONSERVER_InferenceResponse* inference_response, const uint32_t index,
+    const char** name, TRITONSERVER_DataType* datatype, const int64_t** shape,
+    uint64_t* dim_count, const void** base, size_t* byte_size,
+    TRITONSERVER_MemoryType* memory_type, int64_t* memory_type_id,
+    void** userp);
+
 
  private:
   TritonLoader(
@@ -365,6 +375,7 @@ class TritonLoader : public nic::InferenceServerClient {
   TritonServerInferenceRequestSetPriorityFn_t set_priority_fn_;
   TritonServerInferenceRequestSetTimeoutMicrosecondsFn_t set_timeout_ms_fn_;
   TritonServerStringToDatatypeFn_t string_to_datatype_fn_;
+  TritonServerInferenceResponseOutputFn_t inference_response_output_fn_;
 
   TRITONSERVER_ServerOptions* options_;
   TRITONSERVER_Server* server_ptr_;
@@ -379,18 +390,7 @@ class TritonLoader : public nic::InferenceServerClient {
   TRITONSERVER_memorytype_enum requested_memory_type_ = TRITONSERVER_MEMORY_CPU;
   bool model_is_loaded_ = false;
   bool server_is_ready_ = false;
-
-  //   /// Helper class to manage requests...
-  //   class CApiInferRequest {
-  //    public:
-  //     CApiInferRequest();
-  //     ~CApiInferRequest();
-
-  //     nic::RequestTimers& Timer() { return timer_; }
-
-  //    private:
-  //     nic::RequestTimers timer_;
-  //   };
+  nic::RequestTimers timer_;
 };
 
 

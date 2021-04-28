@@ -498,6 +498,7 @@ TritonLoader::LoadServerLibrary()
   TritonServerInferenceRequestSetPriorityFn_t spfn;
   TritonServerInferenceRequestSetTimeoutMicrosecondsFn_t stmsfn;
   TritonServerStringToDatatypeFn_t stdtfn;
+  TritonServerInferenceResponseOutputFn_t irofn;
 
   RETURN_IF_ERROR(GetEntrypoint(
       dlhandle_, "TRITONSERVER_ApiVersion", true /* optional */,
@@ -641,6 +642,9 @@ TritonLoader::LoadServerLibrary()
   RETURN_IF_ERROR(GetEntrypoint(
       dlhandle_, "TRITONSERVER_StringToDataType", true /* optional */,
       reinterpret_cast<void**>(&stdtfn)));
+    RETURN_IF_ERROR(GetEntrypoint(
+      dlhandle_, "TRITONSERVER_InferenceResponseOutput", true /* optional */,
+      reinterpret_cast<void**>(&irofn)));
 
 
   api_version_fn_ = apifn;
@@ -697,6 +701,7 @@ TritonLoader::LoadServerLibrary()
   set_priority_fn_ = spfn;
   set_timeout_ms_fn_ = stmsfn;
   string_to_datatype_fn_ = stdtfn;
+  inference_response_output_fn_ = irofn;
 
   return Error::Success;
 }
@@ -762,6 +767,7 @@ TritonLoader::ClearHandles()
   set_correlation_id_fn_ = nullptr;
   string_to_datatype_fn_ = nullptr;
   response_allocator_delete_fn_ = nullptr;
+  inference_response_output_fn_ = nullptr;
 }
 
 Error
@@ -779,13 +785,17 @@ Error
 TritonLoader::Infer(
     const nic::InferOptions& options,
     const std::vector<nic::InferInput*>& inputs,
-    const std::vector<const nic::InferRequestedOutput*>& outputs)
+    const std::vector<const nic::InferRequestedOutput*>& outputs
+        InferResult** result)
 {
   TRITONSERVER_ResponseAllocator* allocator = nullptr;
   TRITONSERVER_InferenceRequest* irequest = nullptr;
+  Timer().Reset();
+  Timer().CaptureTimestamp(RequestTimers::Kind::REQUEST_START);
   InitializeRequest(options, outputs, allocator, irequest);
   AddInputs(options, inputs, irequest);
   AddOutputs(options, outputs, irequest);
+  Timer().CaptureTimestamp(RequestTimers::Kind::SEND_START);
   // Perform inference...
   auto p = new std::promise<TRITONSERVER_InferenceResponse*>();
   std::future<TRITONSERVER_InferenceResponse*> completed = p->get_future();
@@ -801,14 +811,50 @@ TritonLoader::Infer(
   TRITONSERVER_InferenceResponse* completed_response = completed.get();
   RETURN_IF_TRITONSERVER_ERROR(
       inference_response_error_fn_(completed_response), "response status");
+  std::unordered_map<std::string, std::vector<char>> output_data;
+  uint32_t output_count;
+  RETURN_IF_TRITONSERVER_ERROR(
+      inference_response_output_count_fn_(completed_response, &output_count),
+      "getting number of response outputs");
+  // get data out
+  std::unordered_map<std::string, std::vector<char>> output_data;
+  for (uint32_t idx = 0; idx < output_count; ++idx) {
+    const char* cname;
+    TRITONSERVER_DataType datatype;
+    const int64_t* shape;
+    uint64_t dim_count;
+    const void* base;
+    size_t byte_size;
+    TRITONSERVER_MemoryType memory_type;
+    int64_t memory_type_id;
+    void* userp;
+    RETURN_IF_TRITONSERVER_ERROR(
+        inference_response_output_fn_(
+            completed_response, idx, &cname, &datatype, &shape, &dim_count, &base,
+            &byte_size, &memory_type, &memory_type_id, &userp),
+        "getting output info");
+    if (cname == nullptr) {
+      return Error("unable to get output name");
+    }
+    std::string name(cname);
+    std::vector<char>& odata = output_data[name];
+    const char* cbase = reinterpret_cast<const char*>(base);
+    odata.assign(cbase, cbase + byte_size);
+  }
+  Timer().CaptureTimestamp(RequestTimers::Kind::REQUEST_END);
+    err = UpdateInferStat(sync_request->Timer());
+  if (!err.IsOk()) {
+    std::cerr << "Failed to update context stat: " << err << std::endl;
+  }
 
+
+  // clean up
   RETURN_IF_TRITONSERVER_ERROR(
       inference_response_delete_fn_(completed_response),
       "deleting inference response");
   RETURN_IF_TRITONSERVER_ERROR(
       TRITONSERVER_InferenceRequestDelete(irequest),
       "deleting inference request");
-
   RETURN_IF_TRITONSERVER_ERROR(
       response_allocator_delete_fn_(allocator), "deleting response allocator");
   return Error::Success;
