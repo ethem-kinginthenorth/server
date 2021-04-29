@@ -37,6 +37,7 @@ set(
      shared_library.h
      triton_loader.h
      common.h
+     c_api_infer_results.h
 )
 
 add_library(

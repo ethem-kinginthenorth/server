@@ -25,6 +25,7 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define TRITON_INFERENCE_SERVER_CAPI_CLASS \
   perfanalyzer::clientbackend::TritonLoader
+
 #include "src/clients/c++/perf_analyzer/c_api_helpers/triton_loader.h"
 #include <rapidjson/document.h>
 #include <rapidjson/error/en.h>
@@ -32,8 +33,13 @@
 #include <future>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include "src/clients/c++/perf_analyzer/c_api_helpers/c_api_infer_results.h"
 #include "src/clients/c++/perf_analyzer/c_api_helpers/common.h"
 namespace cb = perfanalyzer::clientbackend;
+namespace nvidia { namespace inferenceserver { namespace client {
+class InferResultCApi;
+}}}  // namespace nvidia::inferenceserver::client
 namespace perfanalyzer { namespace clientbackend {
 namespace {
 bool enforce_memory_type = false;
@@ -499,6 +505,7 @@ TritonLoader::LoadServerLibrary()
   TritonServerInferenceRequestSetTimeoutMicrosecondsFn_t stmsfn;
   TritonServerStringToDatatypeFn_t stdtfn;
   TritonServerInferenceResponseOutputFn_t irofn;
+  TritonServerRequestIdFn_t ridfn;
 
   RETURN_IF_ERROR(GetEntrypoint(
       dlhandle_, "TRITONSERVER_ApiVersion", true /* optional */,
@@ -642,9 +649,12 @@ TritonLoader::LoadServerLibrary()
   RETURN_IF_ERROR(GetEntrypoint(
       dlhandle_, "TRITONSERVER_StringToDataType", true /* optional */,
       reinterpret_cast<void**>(&stdtfn)));
-    RETURN_IF_ERROR(GetEntrypoint(
+  RETURN_IF_ERROR(GetEntrypoint(
       dlhandle_, "TRITONSERVER_InferenceResponseOutput", true /* optional */,
       reinterpret_cast<void**>(&irofn)));
+  RETURN_IF_ERROR(GetEntrypoint(
+      dlhandle_, "TRITONSERVER_InferenceRequestId", true /* optional */,
+      reinterpret_cast<void**>(&ridfn)));
 
 
   api_version_fn_ = apifn;
@@ -702,6 +712,7 @@ TritonLoader::LoadServerLibrary()
   set_timeout_ms_fn_ = stmsfn;
   string_to_datatype_fn_ = stdtfn;
   inference_response_output_fn_ = irofn;
+  request_id_fn_ = ridfn;
 
   return Error::Success;
 }
@@ -768,6 +779,7 @@ TritonLoader::ClearHandles()
   string_to_datatype_fn_ = nullptr;
   response_allocator_delete_fn_ = nullptr;
   inference_response_output_fn_ = nullptr;
+  request_id_fn_ = nullptr;
 }
 
 Error
@@ -785,17 +797,17 @@ Error
 TritonLoader::Infer(
     const nic::InferOptions& options,
     const std::vector<nic::InferInput*>& inputs,
-    const std::vector<const nic::InferRequestedOutput*>& outputs
-        InferResult** result)
+    const std::vector<const nic::InferRequestedOutput*>& outputs,
+    nic::InferResult** result)
 {
   TRITONSERVER_ResponseAllocator* allocator = nullptr;
   TRITONSERVER_InferenceRequest* irequest = nullptr;
   Timer().Reset();
-  Timer().CaptureTimestamp(RequestTimers::Kind::REQUEST_START);
+  Timer().CaptureTimestamp(nic::RequestTimers::Kind::REQUEST_START);
   InitializeRequest(options, outputs, allocator, irequest);
   AddInputs(options, inputs, irequest);
   AddOutputs(options, outputs, irequest);
-  Timer().CaptureTimestamp(RequestTimers::Kind::SEND_START);
+  Timer().CaptureTimestamp(nic::RequestTimers::Kind::SEND_START);
   // Perform inference...
   auto p = new std::promise<TRITONSERVER_InferenceResponse*>();
   std::future<TRITONSERVER_InferenceResponse*> completed = p->get_future();
@@ -811,13 +823,12 @@ TritonLoader::Infer(
   TRITONSERVER_InferenceResponse* completed_response = completed.get();
   RETURN_IF_TRITONSERVER_ERROR(
       inference_response_error_fn_(completed_response), "response status");
+  // get data out
   std::unordered_map<std::string, std::vector<char>> output_data;
   uint32_t output_count;
   RETURN_IF_TRITONSERVER_ERROR(
       inference_response_output_count_fn_(completed_response, &output_count),
       "getting number of response outputs");
-  // get data out
-  std::unordered_map<std::string, std::vector<char>> output_data;
   for (uint32_t idx = 0; idx < output_count; ++idx) {
     const char* cname;
     TRITONSERVER_DataType datatype;
@@ -830,8 +841,8 @@ TritonLoader::Infer(
     void* userp;
     RETURN_IF_TRITONSERVER_ERROR(
         inference_response_output_fn_(
-            completed_response, idx, &cname, &datatype, &shape, &dim_count, &base,
-            &byte_size, &memory_type, &memory_type_id, &userp),
+            completed_response, idx, &cname, &datatype, &shape, &dim_count,
+            &base, &byte_size, &memory_type, &memory_type_id, &userp),
         "getting output info");
     if (cname == nullptr) {
       return Error("unable to get output name");
@@ -841,13 +852,16 @@ TritonLoader::Infer(
     const char* cbase = reinterpret_cast<const char*>(base);
     odata.assign(cbase, cbase + byte_size);
   }
-  Timer().CaptureTimestamp(RequestTimers::Kind::REQUEST_END);
-    err = UpdateInferStat(sync_request->Timer());
+  Timer().CaptureTimestamp(nic::RequestTimers::Kind::REQUEST_END);
+  nic::Error err = UpdateInferStat(Timer());
   if (!err.IsOk()) {
     std::cerr << "Failed to update context stat: " << err << std::endl;
   }
-
-
+  const char* cid;
+  RETURN_IF_TRITONSERVER_ERROR(
+      request_id_fn_(irequest, &cid), "Failed to get request id");
+  std::string id(cid);
+  nic::InferResultCApi::Create(result, err, id);
   // clean up
   RETURN_IF_TRITONSERVER_ERROR(
       inference_response_delete_fn_(completed_response),
@@ -993,49 +1007,5 @@ TritonLoader::AddOutputs(
   }
   return Error::Success;
 }
-
-/// delete
-TRITONSERVER_Error*
-TritonLoader::ParseModelMetadata(
-    const rapidjson::Document& model_metadata, bool* is_int,
-    bool* is_torch_model)
-{
-  std::string seen_data_type;
-  for (const auto& input : model_metadata["inputs"].GetArray()) {
-    if (strcmp(input["datatype"].GetString(), "INT32") &&
-        strcmp(input["datatype"].GetString(), "FP32")) {
-      return error_new_fn_(
-          TRITONSERVER_ERROR_UNSUPPORTED,
-          "simple lib example only supports model with data type INT32 or "
-          "FP32");
-    }
-    if (seen_data_type.empty()) {
-      seen_data_type = input["datatype"].GetString();
-    } else if (strcmp(seen_data_type.c_str(), input["datatype"].GetString())) {
-      return error_new_fn_(
-          TRITONSERVER_ERROR_INVALID_ARG,
-          "the inputs and outputs of 'simple' model must have the data type");
-    }
-  }
-  for (const auto& output : model_metadata["outputs"].GetArray()) {
-    if (strcmp(output["datatype"].GetString(), "INT32") &&
-        strcmp(output["datatype"].GetString(), "FP32")) {
-      return error_new_fn_(
-          TRITONSERVER_ERROR_UNSUPPORTED,
-          "simple lib example only supports model with data type INT32 or "
-          "FP32");
-    } else if (strcmp(seen_data_type.c_str(), output["datatype"].GetString())) {
-      return error_new_fn_(
-          TRITONSERVER_ERROR_INVALID_ARG,
-          "the inputs and outputs of 'simple' model must have the data type");
-    }
-  }
-
-  *is_int = (strcmp(seen_data_type.c_str(), "INT32") == 0);
-  *is_torch_model =
-      (strcmp(model_metadata["platform"].GetString(), "pytorch_libtorch") == 0);
-  return nullptr;
-}
-
 
 }}  // namespace perfanalyzer::clientbackend

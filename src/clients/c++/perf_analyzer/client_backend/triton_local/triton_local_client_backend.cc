@@ -185,7 +185,8 @@ TritonLocalClientBackend::Infer(
 
   nic::InferResult* triton_result;
   if (auto loader = loader_.lock()) {
-    RETURN_IF_ERROR(loader->Infer(options, inputs, outputs, triton_result));
+    RETURN_IF_ERROR(loader->Infer(
+        triton_options, triton_inputs, triton_outputs, &triton_result));
     // if (protocol_ == ProtocolType::GRPC) {
     //   RETURN_IF_TRITON_ERROR(client_.grpc_client_->Infer(
     //       &triton_result, triton_options, triton_inputs, triton_outputs,
@@ -234,7 +235,8 @@ TritonLocalClientBackend::AsyncInfer(
   // }
 
   // return Error::Success;
-  return Error("CAPI does not support streaming inferences");;
+  return Error("CAPI does not support streaming inferences");
+  ;
 }
 
 Error
@@ -247,14 +249,15 @@ TritonLocalClientBackend::StartStream(OnCompleteFn callback, bool enable_stats)
 
   // if (protocol_ == ProtocolType::GRPC) {
   //   RETURN_IF_TRITON_ERROR(client_.grpc_client_->StartStream(
-  //       wrapped_callback, enable_stats, 0 /* stream_timeout */, *http_headers_,
-  //       compression_algorithm_));
+  //       wrapped_callback, enable_stats, 0 /* stream_timeout */,
+  //       *http_headers_, compression_algorithm_));
   // } else {
   //   return Error("HTTP does not support starting streams");
   // }
 
   // return Error::Success;
-  return Error("CAPI does not support streaming inferences");;
+  return Error("CAPI does not support streaming inferences");
+  ;
 }
 
 Error
@@ -285,14 +288,14 @@ Error
 TritonLocalClientBackend::ClientInferStat(InferStat* infer_stat)
 {
   nic::InferStat triton_infer_stat;
-  if (protocol_ == ProtocolType::GRPC) {
-    RETURN_IF_TRITON_ERROR(
-        client_.grpc_client_->ClientInferStat(&triton_infer_stat));
-  } else {
-    RETURN_IF_TRITON_ERROR(
-        client_.http_client_->ClientInferStat(&triton_infer_stat));
-  }
-
+  // if (protocol_ == ProtocolType::GRPC) {
+  //   RETURN_IF_TRITON_ERROR(
+  //       client_.grpc_client_->ClientInferStat(&triton_infer_stat));
+  // } else {
+  //   RETURN_IF_TRITON_ERROR(
+  //       client_.http_client_->ClientInferStat(&triton_infer_stat));
+  // }
+  _loader->ClientInferStat(&triton_infer_stat);
   ParseInferStat(triton_infer_stat, infer_stat);
 
   return Error::Success;
@@ -323,35 +326,14 @@ TritonLocalClientBackend::ModelInferenceStatistics(
 Error
 TritonLocalClientBackend::UnregisterAllSharedMemory()
 {
-  if (protocol_ == ProtocolType::GRPC) {
-    RETURN_IF_TRITON_ERROR(
-        client_.grpc_client_->UnregisterSystemSharedMemory("", *http_headers_));
-    RETURN_IF_TRITON_ERROR(
-        client_.grpc_client_->UnregisterCudaSharedMemory("", *http_headers_));
-  } else {
-    RETURN_IF_TRITON_ERROR(
-        client_.http_client_->UnregisterSystemSharedMemory("", *http_headers_));
-    RETURN_IF_TRITON_ERROR(
-        client_.http_client_->UnregisterCudaSharedMemory("", *http_headers_));
-  }
-
-  return Error::Success;
+  return Error("does not deal with shared memory yet");
 }
 
 Error
 TritonLocalClientBackend::RegisterSystemSharedMemory(
     const std::string& name, const std::string& key, const size_t byte_size)
 {
-  if (protocol_ == ProtocolType::GRPC) {
-    RETURN_IF_TRITON_ERROR(client_.grpc_client_->RegisterSystemSharedMemory(
-        name, key, byte_size, 0 /* offset */, *http_headers_));
-
-  } else {
-    RETURN_IF_TRITON_ERROR(client_.http_client_->RegisterSystemSharedMemory(
-        name, key, byte_size, 0 /* offset */, *http_headers_));
-  }
-
-  return Error::Success;
+  return Error("does not deal with shared memory yet");
 }
 
 Error
@@ -359,16 +341,7 @@ TritonLocalClientBackend::RegisterCudaSharedMemory(
     const std::string& name, const cudaIpcMemHandle_t& handle,
     const size_t byte_size)
 {
-  if (protocol_ == ProtocolType::GRPC) {
-    RETURN_IF_TRITON_ERROR(client_.grpc_client_->RegisterCudaSharedMemory(
-        name, handle, 0 /*device id*/, byte_size, *http_headers_));
-
-  } else {
-    RETURN_IF_TRITON_ERROR(client_.http_client_->RegisterCudaSharedMemory(
-        name, handle, 0 /*device id*/, byte_size, *http_headers_));
-  }
-
-  return Error::Success;
+  return Error("does not deal with shared memory yet");
 }
 
 //

@@ -91,7 +91,7 @@ class TritonLoader : public nic::InferenceServerClient {
       const nic::InferOptions& options,
       const std::vector<nic::InferInput*>& inputs,
       const std::vector<const nic::InferRequestedOutput*>& outputs,
-      InferResult** result);
+      nic::InferResult** result);
 
   bool ModelIsLoaded() const { return model_is_loaded_; }
   bool ServerIsReady() const { return server_is_ready_; }
@@ -268,13 +268,16 @@ class TritonLoader : public nic::InferenceServerClient {
   // TRITONSERVER_StringToDataType
   typedef TRITONSERVER_DataType (*TritonServerStringToDatatypeFn_t)(
       const char* dtype);
-// TRITONSERVER_InferenceResponseOutput
-typedef TRITONSERVER_Error* (*TritonServerInferenceResponseOutputFn_t)(
-    TRITONSERVER_InferenceResponse* inference_response, const uint32_t index,
-    const char** name, TRITONSERVER_DataType* datatype, const int64_t** shape,
-    uint64_t* dim_count, const void** base, size_t* byte_size,
-    TRITONSERVER_MemoryType* memory_type, int64_t* memory_type_id,
-    void** userp);
+  // TRITONSERVER_InferenceResponseOutput
+  typedef TRITONSERVER_Error* (*TritonServerInferenceResponseOutputFn_t)(
+      TRITONSERVER_InferenceResponse* inference_response, const uint32_t index,
+      const char** name, TRITONSERVER_DataType* datatype, const int64_t** shape,
+      uint64_t* dim_count, const void** base, size_t* byte_size,
+      TRITONSERVER_MemoryType* memory_type, int64_t* memory_type_id,
+      void** userp);
+  // TRITONSERVER_InferenceRequestId
+  typedef TRITONSERVER_Error* (*TritonServerRequestIdFn_t)(
+      TRITONSERVER_InferenceRequest* inference_request, const char** id);
 
 
  private:
@@ -308,10 +311,6 @@ typedef TRITONSERVER_Error* (*TritonServerInferenceResponseOutputFn_t)(
       const nic::InferOptions& options,
       const std::vector<const nic::InferRequestedOutput*>& outputs,
       TRITONSERVER_InferenceRequest* irequest);
-
-  TRITONSERVER_Error* ParseModelMetadata(
-      const rapidjson::Document& model_metadata, bool* is_int,
-      bool* is_torch_model);
 
   void* dlhandle_;
   TritonServerApiVersionFn_t api_version_fn_;
@@ -376,6 +375,7 @@ typedef TRITONSERVER_Error* (*TritonServerInferenceResponseOutputFn_t)(
   TritonServerInferenceRequestSetTimeoutMicrosecondsFn_t set_timeout_ms_fn_;
   TritonServerStringToDatatypeFn_t string_to_datatype_fn_;
   TritonServerInferenceResponseOutputFn_t inference_response_output_fn_;
+  TritonServerRequestIdFn_t request_id_fn_;
 
   TRITONSERVER_ServerOptions* options_;
   TRITONSERVER_Server* server_ptr_;
@@ -392,6 +392,5 @@ typedef TRITONSERVER_Error* (*TritonServerInferenceResponseOutputFn_t)(
   bool server_is_ready_ = false;
   nic::RequestTimers timer_;
 };
-
 
 }}  // namespace perfanalyzer::clientbackend
