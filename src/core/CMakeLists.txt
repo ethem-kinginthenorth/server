@@ -152,7 +152,7 @@ if(${TRITON_ENABLE_S3})
 endif()
 
 if(${TRITON_ENABLE_GPU})
-  set(HOST_COMPILER_FLAGS "")
+  set(HOST_COMPILER_FLAGS "-fPIC")
   if (WIN32)
     set(HOST_COMPILER_FLAGS "/MD")
   endif()
