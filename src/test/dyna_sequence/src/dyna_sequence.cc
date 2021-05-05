@@ -170,7 +170,7 @@ ModelState::ValidateModelConfig()
       std::string("'START', 'END, 'READY' and 'CORRID' must be configured as "
                   "the control inputs"));
 
-  std::vector<std::string> control_input_names;
+  std::set<std::string> control_input_names;
   for (size_t io_index = 0; io_index < control_inputs.ArraySize(); io_index++) {
     common::TritonJson::Value control_input;
     RETURN_IF_ERROR(control_inputs.IndexAsObject(io_index, &control_input));
@@ -178,29 +178,20 @@ ModelState::ValidateModelConfig()
     size_t input_name_len;
     RETURN_IF_ERROR(
         control_input.MemberAsString("name", &input_name, &input_name_len));
-    control_input_names.push_back(input_name);
+    control_input_names.insert(input_name);
   }
 
   RETURN_ERROR_IF_FALSE(
-      (std::find(
-           control_input_names.begin(), control_input_names.end(), "START") !=
-       control_input_names.end()) ||
-          (std::find(
-               control_input_names.begin(), control_input_names.end(), "END") !=
-           control_input_names.end()) ||
-          (std::find(
-               control_input_names.begin(), control_input_names.end(),
-               "READY") != control_input_names.end()) ||
-          (std::find(
-               control_input_names.begin(), control_input_names.end(),
-               "CORRID") != control_input_names.end()),
+      (control_input_names.find("START") != control_input_names.end()) ||
+          (control_input_names.find("END") != control_input_names.end()) ||
+          (control_input_names.find("READY") != control_input_names.end()) ||
+          (control_input_names.find("CORRID") != control_input_names.end()),
       TRITONSERVER_ERROR_INVALID_ARG,
       std::string("'START', 'END, 'READY' and 'CORRID' must be configured as "
                   "the control inputs"));
 
   // The CORRID input must be UINT64 type.
-  auto itr = std::find(
-      control_input_names.begin(), control_input_names.end(), "CORRID");
+  auto itr = control_input_names.find("CORRID");
   size_t corrid_pos = std::distance(control_input_names.begin(), itr);
   triton::common::TritonJson::Value corrid_input;
   RETURN_IF_ERROR(control_inputs.IndexAsObject(corrid_pos, &corrid_input));
