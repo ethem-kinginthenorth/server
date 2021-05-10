@@ -362,9 +362,12 @@ def pytorch_cmake_args(images):
     else:
         image = 'nvcr.io/nvidia/pytorch:{}-py3'.format(
             FLAGS.upstream_container_version)
-    return [
-        '-DTRITON_PYTORCH_DOCKER_IMAGE={}'.format(image),
-    ]
+    #return [
+    #    '-DTRITON_PYTORCH_DOCKER_IMAGE={}'.format(image),
+    #]
+
+    return [ '-DTRITON_PYTORCH_INCLUDE_PATHS={}'.format('/home/docker/pytorch_files/includes'),
+             '-DTRITON_PYTORCH_LIB_PATHS={}'.format('/home/docker/pytorch_files/libs') ]
 
 
 def onnxruntime_cmake_args(images):
@@ -874,6 +877,27 @@ def container_build(images, backends, repoagents):
         logging.error(traceback.format_exc())
         fail('container build failed')
 
+def rectify_pytorch_cmake(filename):
+    rf = open(filename, 'r')
+    lines = []
+    while True:
+        line = rf.readline()
+        if not line:
+            break
+        if line is 'PRIVATE ${TRITON_PYTORCH_INCLUDE_PATHS}':
+            lines.add('PRIVATE')
+            lines.add('  ${TRITON_PYTORCH_INCLUDE_PATHS}/torch')
+            lines.add('  ${TRITON_PYTORCH_INCLUDE_PATHS}/torch/torch/csrc/api/include')
+            lines.add('  ${TRITON_PYTORCH_INCLUDE_PATHS}/torchvision')
+        else:
+            lines.add( line)
+    rf.close()
+
+    wf = open(filename, 'w')
+    wf.writelines(lines)
+    wf.close()     
+
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -1028,6 +1052,11 @@ if __name__ == '__main__':
                         action="store_true",
                         required=False,
                         help='Enable GPU support.')
+    parser.add_argument('--centos',
+                        action='store_true',
+                        required=False,
+                        help='building for centos')
+
     parser.add_argument(
         '--min-compute-capability',
         type=str,
@@ -1236,6 +1265,10 @@ if __name__ == '__main__':
             repo_build_dir,
             backend_cmake_args(images, components, be, repo_install_dir,
                                library_paths))
+        if FLAGS.centos and be is 'pytorch':
+            filename = os.path.join( FLAGS.build_dir, os.path.join('pytorch', 'CMakeLists.txt'))
+            #rectify_pytorch_cmake( filename)
+
         makeinstall(repo_build_dir)
 
         backend_install_dir = os.path.join(FLAGS.install_dir, 'backends', be)
